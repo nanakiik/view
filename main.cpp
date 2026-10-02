@@ -6,54 +6,32 @@
 
 #include <cstdint>
 #include <cstdio>
+
 #include <fstream>
 #include <string>
 #include <vector>
+
+#include <windows.h>
+// 🤣🤣
+#include <commdlg.h>
+
+#pragma comment(lib, "Comdlg32.lib")
 
 static constexpr int IMAGE_WIDTH = 1920;
 static constexpr int IMAGE_HEIGHT = 1080;
 static constexpr int CHANNELS = 3;
 static constexpr float TOOLBAR_HEIGHT = 60.0f;
 
-static constexpr size_t IMAGE_SIZE =
-    static_cast<size_t>(IMAGE_WIDTH) * IMAGE_HEIGHT * CHANNELS;
+static constexpr size_t IMAGE_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT * CHANNELS;
 
 int main() {
-  // ==================================================
-  // SDL 初始化
-  // ==================================================
 
-  if (!SDL_Init(SDL_INIT_VIDEO)) {
-    std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
-
-    return 1;
-  }
-
+  SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
   SDL_Window *window =
-      SDL_CreateWindow("RGB Viewer", 1280, 720, SDL_WINDOW_RESIZABLE);
-
-  if (!window) {
-    std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-
-    SDL_Quit();
-    return 1;
-  }
-
+      SDL_CreateWindow("RGB Viewer", 1920, 1080, SDL_WINDOW_RESIZABLE);
   SDL_Renderer *renderer = SDL_CreateRenderer(window, nullptr);
 
-  if (!renderer) {
-    std::fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
-
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-
-    return 1;
-  }
-
-  // ==================================================
-  // ImGui 初始化
-  // ==================================================
-
+  // gui
   IMGUI_CHECKVERSION();
 
   ImGui::CreateContext();
@@ -67,28 +45,13 @@ int main() {
 
   ImGui_ImplSDLRenderer3_Init(renderer);
 
-  // ==================================================
-  // RGB 数据
-  // ==================================================
-
   std::vector<uint8_t> imageData;
-
   SDL_Texture *texture = nullptr;
-
-  char filename[1024] = {};
-
   std::string status = "Please select an RGB file.";
-
-  // ==================================================
-  // 主循环
-  // ==================================================
 
   bool running = true;
 
   while (running) {
-    // --------------------------------------------------
-    // SDL Event
-    // --------------------------------------------------
 
     SDL_Event event;
 
@@ -99,118 +62,76 @@ int main() {
         running = false;
       }
     }
-
-    // --------------------------------------------------
-    // ImGui Frame
-    // --------------------------------------------------
+    if (!running)
+      break;
 
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
 
     ImGui::NewFrame();
 
-    // ==================================================
-    // UI
-    // ==================================================
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(300.0f, 80.0f), ImGuiCond_Always);
 
-    ImGui::Begin("RGB Viewer");
-
-    ImGui::Text("Image: %d x %d RGB8", IMAGE_WIDTH, IMAGE_HEIGHT);
-
-    ImGui::Separator();
-
-    ImGui::InputText("File", filename, sizeof(filename));
-
-    ImGui::SameLine();
+    ImGui::Begin("RGB Viewer", nullptr,
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
 
     if (ImGui::Button("Load")) {
-      // ----------------------------------------------
-      // 打开文件
-      // ----------------------------------------------
+      wchar_t fileName[MAX_PATH] = L"";
 
-      std::ifstream file(filename, std::ios::binary);
+      OPENFILENAMEW ofn{};
+      ofn.lStructSize = sizeof(ofn);
+      ofn.lpstrFile = fileName;
+      ofn.nMaxFile = MAX_PATH;
 
-      if (!file) {
-        status = "Failed to open file.";
+      ofn.lpstrFilter = L"Text Files (*.rgb)\0*.rgb\0"
+                        L"JSON Files (*.json)\0*.json\0"
+                        L"All Files (*.*)\0*.*\0";
+
+      ofn.nFilterIndex = 1;
+
+      ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+      GetOpenFileNameW(&ofn);
+
+      std::ifstream file(fileName, std::ios::binary);
+
+      file.seekg(0, std::ios::end);
+
+      const std::streamsize fileSize = file.tellg();
+
+      file.seekg(0, std::ios::beg);
+
+      if (fileSize != static_cast<std::streamsize>(IMAGE_SIZE)) {
+        imageData.clear();
+      } else {
+
+        imageData.resize(IMAGE_SIZE);
+
+        file.read(reinterpret_cast<char *>(imageData.data()), IMAGE_SIZE);
 
         if (texture) {
           SDL_DestroyTexture(texture);
           texture = nullptr;
         }
 
-        imageData.clear();
-      } else {
-        // ------------------------------------------
-        // 检查文件大小
-        // ------------------------------------------
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24,
+                                    SDL_TEXTUREACCESS_STATIC, IMAGE_WIDTH,
+                                    IMAGE_HEIGHT);
 
-        file.seekg(0, std::ios::end);
-
-        const std::streamsize fileSize = file.tellg();
-
-        file.seekg(0, std::ios::beg);
-
-        // ------------------------------------------
-        // RGB 文件必须正好是 1920x1080x3
-        // ------------------------------------------
-
-        if (fileSize != static_cast<std::streamsize>(IMAGE_SIZE)) {
-          status = "Invalid file size: " + std::to_string(fileSize) +
-                   " bytes. Expected " + std::to_string(IMAGE_SIZE) + " bytes.";
+        if (!texture) {
+          status =
+              "Failed to create SDL texture: " + std::string(SDL_GetError());
 
           imageData.clear();
         } else {
-          // --------------------------------------
-          // 读取 RGB 数据
-          // --------------------------------------
 
-          imageData.resize(IMAGE_SIZE);
+          if (!SDL_UpdateTexture(texture, nullptr, imageData.data(),
+                                 IMAGE_WIDTH * CHANNELS)) {
 
-          file.read(reinterpret_cast<char *>(imageData.data()), IMAGE_SIZE);
-
-          if (!file) {
-            status = "Failed to read RGB data.";
-
-            imageData.clear();
+            SDL_DestroyTexture(texture);
+            texture = nullptr;
           } else {
-            // ----------------------------------
-            // 删除旧 Texture
-            // ----------------------------------
-
-            if (texture) {
-              SDL_DestroyTexture(texture);
-              texture = nullptr;
-            }
-
-            // ----------------------------------
-            // 创建 RGB Texture
-            // ----------------------------------
-
-            texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24,
-                                        SDL_TEXTUREACCESS_STATIC, IMAGE_WIDTH,
-                                        IMAGE_HEIGHT);
-
-            if (!texture) {
-              status = "Failed to create SDL texture: " +
-                       std::string(SDL_GetError());
-
-              imageData.clear();
-            } else {
-              // ------------------------------
-              // RGB 数据上传 GPU
-              // ------------------------------
-
-              if (!SDL_UpdateTexture(texture, nullptr, imageData.data(),
-                                     IMAGE_WIDTH * CHANNELS)) {
-                status =
-                    "Failed to update texture: " + std::string(SDL_GetError());
-
-                SDL_DestroyTexture(texture);
-                texture = nullptr;
-              } else {
-                status = "Loaded: " + std::string(filename);
-              }
-            }
+            status = "Loaded.";
           }
         }
       }
@@ -218,15 +139,7 @@ int main() {
 
     ImGui::TextWrapped("%s", status.c_str());
 
-    ImGui::Separator();
-
-    ImGui::Text("Expected size: %zu bytes", IMAGE_SIZE);
-
     ImGui::End();
-
-    // ==================================================
-    // SDL Rendering
-    // ==================================================
 
     ImGui::Render();
 
@@ -234,27 +147,17 @@ int main() {
 
     SDL_RenderClear(renderer);
 
-    // --------------------------------------------------
-    // 显示 RGB 图片
-    // --------------------------------------------------
-
     if (texture) {
       int windowWidth;
       int windowHeight;
-
       SDL_GetWindowSize(window, &windowWidth, &windowHeight);
-
       const float imageAspect =
           static_cast<float>(IMAGE_WIDTH) / static_cast<float>(IMAGE_HEIGHT);
-
       const float windowAspect =
           static_cast<float>(windowWidth) / static_cast<float>(windowHeight);
-
       SDL_FRect dst{};
 
       if (windowAspect > imageAspect) {
-        // 窗口比较宽
-        // 以高度为基准
 
         dst.h = static_cast<float>(windowHeight);
         dst.w = dst.h * imageAspect;
@@ -263,8 +166,6 @@ int main() {
 
         dst.y = 0.0f;
       } else {
-        // 窗口比较高
-        // 以宽度为基准
 
         dst.w = static_cast<float>(windowWidth);
         dst.h = dst.w / imageAspect;
@@ -277,18 +178,10 @@ int main() {
       SDL_RenderTexture(renderer, texture, nullptr, &dst);
     }
 
-    // --------------------------------------------------
-    // ImGui
-    // --------------------------------------------------
-
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
 
     SDL_RenderPresent(renderer);
   }
-
-  // ==================================================
-  // 清理
-  // ==================================================
 
   if (texture) {
     SDL_DestroyTexture(texture);
@@ -302,7 +195,6 @@ int main() {
 
   SDL_DestroyRenderer(renderer);
   SDL_DestroyWindow(window);
-
   SDL_Quit();
 
   return 0;

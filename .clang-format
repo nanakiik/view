@@ -1,0 +1,4 @@
+# https://clang.llvm.org/docs/ClangFormatStyleOptions.html
+# https://google.github.io/styleguide/cppguide.html
+BasedOnStyle: LLVM
+Language: Cpp
